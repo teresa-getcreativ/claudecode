@@ -1,10 +1,50 @@
 {
   "version": 1,
   "skills": {
+    "brand-intake": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "e16d9849231f2fcb1f54a5c744455f214301a6d6857fb1b62dafb9d6250d120a"
+    },
+    "creative-mechanics": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "38575061f3230bee65a398114160d61b3a95d499f09287576242ff8e671ad0f1"
+    },
+    "creative-strategy-engine": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "a40db1d0840d113b157e11cc4f0b4c64c15db1cbaafd0c60dbb8cb3ed4ab97bb"
+    },
+    "hook-tactics": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "3440c72534dd22a3fbd17002b6645e8ed3423de510088726a81e484a1b1babc6"
+    },
+    "hook-voice-patterns": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "7b336ce6f6363cfd7bc6fc964f85c6bd14bea769bbfe9074ced9dba295b92fc7"
+    },
+    "hook-writing": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "a72041e94cb9927d7b49c8019763e43dcc8d4370beaf3c73ba60e39e668bd58c"
+    },
     "refero-design": {
       "source": "referodesign/refero_skill",
       "sourceType": "github",
       "computedHash": "e65c46ee932c4d4a718f743b1c845b4e6b981ec71239e7ca2119ed7bea3a690a"
+    },
+    "review-audit": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "f6f04b3e84552db76203dfda8ee6f1b4a54fa4d55956a184f31cac8e876c6ece"
+    },
+    "visual-formats": {
+      "source": "motion-team/creative-strategy-skills",
+      "sourceType": "github",
+      "computedHash": "1cd4b4dc07fba616a96c3eebdfc8b7fd40749fb5bd65dbfa230eba91a4529b2c"
     }
   }
 }
