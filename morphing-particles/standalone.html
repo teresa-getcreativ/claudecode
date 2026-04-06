@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Morphing Particles</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #fff; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
+#c { width: 100vw; height: 100vh; display: block; }
+.controls {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 8px; z-index: 10;
+}
+.controls button {
+  padding: 10px 24px; border: 1px solid #ddd; border-radius: 999px;
+  background: rgba(255,255,255,0.9); backdrop-filter: blur(8px);
+  cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s;
+}
+.controls button:hover, .controls button.active {
+  background: #111; color: #fff; border-color: #111;
+}
+.loading {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: #999; z-index: 20; background: #fff;
+}
+</style>
+</head>
+<body>
+<div class="loading" id="loading">Computing particle targets...</div>
+<canvas id="c"></canvas>
+<div class="controls">
+  <button data-i="0" class="active">Star</button>
+  <button data-i="1">Heart</button>
+  <button data-i="2">Bolt</button>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js" } }
+</script>
+<script type="module">
+import {
+  Scene, OrthographicCamera, PerspectiveCamera, WebGLRenderer,
+  WebGLRenderTarget, DataTexture, RGBAFormat, FloatType,
+  NearestFilter, RepeatWrapping, ShaderMaterial, BufferGeometry,
+  BufferAttribute, Points, PlaneGeometry, Mesh, Clock, Color,
+  Vector2, Vector3, Raycaster, DoubleSide, MeshBasicMaterial,
+} from 'three';
+
+const noiseGLSL = `
+vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1.0/6.0,1.0/3.0);
+  const vec4 D=vec4(0.0,0.5,1.0,2.0);
+  vec3 i=floor(v+dot(v,C.yyy));
+  vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz);
+  vec3 l=1.0-g;
+  vec3 i1=min(g.xyz,l.zxy);
+  vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx;
+  vec3 x2=x0-i2+2.0*C.xxx;
+  vec3 x3=x0-1.0+3.0*C.xxx;
+  i=mod289(i);
+  vec4 p=permute(permute(permute(
+    i.z+vec4(0.0,i1.z,i2.z,1.0))
+    +i.y+vec4(0.0,i1.y,i2.y,1.0))
+    +i.x+vec4(0.0,i1.x,i2.x,1.0));
+  float n_=1.0/7.0;
+  vec3 ns=n_*D.wyz-D.xzx;
+  vec4 j=p-49.0*floor(p*ns.z*ns.z);
+  vec4 x_=floor(j*ns.z);
+  vec4 y_=floor(j-7.0*x_);
+  vec4 x=x_*ns.x+ns.yyyy;
+  vec4 y=y_*ns.x+ns.yyyy;
+  vec4 h=1.0-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy);
+  vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.0+1.0;
+  vec4 s1=floor(b1)*2.0+1.0;
+  vec4 sh=-step(h,vec4(0.0));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;
+  vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x);
+  vec3 p1=vec3(a0.zw,h.y);
+  vec3 p2=vec3(a1.xy,h.z);
+  vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;
+  vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0);
+  m=m*m;
+  return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}`;
+
+function poissonDisk(w, h, minD, maxD, tries, distFn) {
+  const cellSize = (maxD || minD) / Math.sqrt(2);
+  const gW = Math.ceil(w / cellSize), gH = Math.ceil(h / cellSize);
+  const grid = new Int32Array(gW * gH).fill(-1);
+  const pts = [], active = [];
+  const gi = (x, y) => Math.floor(x / cellSize) + Math.floor(y / cellSize) * gW;
+  function add(x, y) {
+    const i = pts.length; pts.push([x, y]); active.push(i); grid[gi(x, y)] = i; return i;
+  }
+  function near(x, y) {
+    const gx = Math.floor(x / cellSize), gy = Math.floor(y / cellSize);
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const nx = gx + dx, ny = gy + dy;
+      if (nx < 0 || nx >= gW || ny < 0 || ny >= gH) continue;
+      const idx = grid[nx + ny * gW]; if (idx === -1) continue;
+      const p = pts[idx], ddx = p[0] - x, ddy = p[1] - y;
+      const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+      const pd = distFn ? distFn([x, y]) : 1;
+      if (dist < minD + (maxD - minD) * pd) return true;
+    }
+    return false;
+  }
+  add(Math.random() * w, Math.random() * h);
+  while (active.length > 0) {
+    const ri = Math.floor(Math.random() * active.length);
+    const pt = pts[active[ri]]; let found = false;
+    for (let t = 0; t < tries; t++) {
+      const a = Math.random() * Math.PI * 2;
+      const pd = distFn ? distFn(pt) : 1;
+      const r = minD + (maxD - minD) * pd + Math.random() * minD;
+      const nx = pt[0] + Math.cos(a) * r, ny = pt[1] + Math.sin(a) * r;
+      if (nx >= 0 && nx < w && ny >= 0 && ny < h && !near(nx, ny)) { add(nx, ny); found = true; break; }
+    }
+    if (!found) active.splice(ri, 1);
+  }
+  return pts;
+}
+
+function makeTex(drawFn) {
+  const c = document.createElement('canvas'); c.width = c.height = 500;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 500, 500);
+  ctx.fillStyle = '#000'; drawFn(ctx); return c;
+}
+const starTex = () => makeTex(ctx => {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? 180 : 75;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const x = 250 + Math.cos(a) * r, y = 250 + Math.sin(a) * r;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.closePath(); ctx.fill();
+});
+const heartTex = () => makeTex(ctx => {
+  ctx.beginPath();
+  for (let t = 0; t <= Math.PI * 2; t += 0.01) {
+    const x = 250 + 16 * Math.pow(Math.sin(t), 3) * 9;
+    const y = 270 - (13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t)) * 9;
+    t === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.closePath(); ctx.fill();
+});
+const boltTex = () => makeTex(ctx => {
+  ctx.beginPath();
+  [[280,30],[150,240],[230,240],[180,470],[350,200],[260,200],[330,30]]
+    .forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+  ctx.closePath(); ctx.fill();
+});
+
+function sampleImage(canvas, basePts, density) {
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, 500, 500);
+  const bri = (pt) => {
+    const x = Math.round(pt[0]), y = Math.round(pt[1]);
+    if (x < 0 || x >= 500 || y < 0 || y >= 500) return 1;
+    const p = imgData.data[(x + y * 500) * 4] / 255;
+    return p * p * p;
+  };
+  const maxD = ((density) / 300) * -40 + 50;
+  const sampled = poissonDisk(500, 500, 1, Math.max(5, maxD), 20, bri);
+  const result = new Float32Array(basePts.length * 2);
+  for (let i = 0; i < basePts.length; i++) {
+    const bx = basePts[i][0], by = basePts[i][1];
+    let nd = Infinity, nx = bx - 250, ny = by - 250;
+    for (let j = 0; j < sampled.length; j++) {
+      if (Math.random() < 0.75) continue;
+      const sx = sampled[j][0], sy = sampled[j][1];
+      const dx = sx - bx, dy = sy - by, d = Math.sqrt(dx*dx+dy*dy);
+      if (bri(sampled[j]) < 1 && d < nd) { nd = d; nx = sx - 250; ny = sy - 250; }
+    }
+    result[i * 2] = nx; result[i * 2 + 1] = ny;
+  }
+  return result;
+}
+
+const SZ = 256, SZF = SZ.toFixed(1);
+const canvas = document.getElementById('c');
+const W = window.innerWidth, H = window.innerHeight;
+canvas.width = W; canvas.height = H;
+
+const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true, precision: 'highp' });
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+const scene = new Scene(); scene.background = new Color('#ffffff');
+const camera = new PerspectiveCamera(40, W / H, 0.1, 1000); camera.position.z = 3.5;
+const clock = new Clock();
+
+const density = 150;
+const minD = 10 - density / 300 * 8, maxD = minD + 1;
+const basePts = poissonDisk(500, 500, Math.max(2, minD), Math.max(3, maxD), 20);
+const count = basePts.length;
+const baseFlat = [];
+for (const p of basePts) baseFlat.push(p[0] - 250, p[1] - 250);
+
+document.getElementById('loading').textContent = 'Sampling shapes...';
+await new Promise(r => setTimeout(r, 50));
+
+const textures = [starTex(), heartTex(), boltTex()];
+const targets = [];
+for (let i = 0; i < textures.length; i++) {
+  targets.push(sampleImage(textures[i], basePts, density));
+  document.getElementById('loading').textContent = `Shape ${i+1}/${textures.length} done...`;
+  await new Promise(r => setTimeout(r, 10));
+}
+document.getElementById('loading').style.display = 'none';
+
+function makePosTex(flat) {
+  const d = new Float32Array(SZ * SZ * 4);
+  const n = Math.min(flat.length / 2, SZ * SZ);
+  for (let i = 0; i < n; i++) { d[i*4] = flat[i*2] / 250; d[i*4+1] = flat[i*2+1] / 250; }
+  const t = new DataTexture(d, SZ, SZ, RGBAFormat, FloatType);
+  t.needsUpdate = true; return t;
+}
+const posTex = makePosTex(baseFlat);
+let nearTex = makePosTex(targets[0]);
+
+function makeRT() {
+  return new WebGLRenderTarget(SZ, SZ, {
+    wrapS: RepeatWrapping, wrapT: RepeatWrapping,
+    minFilter: NearestFilter, magFilter: NearestFilter,
+    format: RGBAFormat, type: FloatType, depthBuffer: false,
+  });
+}
+let rt1 = makeRT(), rt2 = makeRT();
+renderer.setRenderTarget(rt1); renderer.clear();
+renderer.setRenderTarget(rt2); renderer.clear();
+renderer.setRenderTarget(null);
+
+const simScene = new Scene();
+const simCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const simMat = new ShaderMaterial({
+  uniforms: {
+    uPosition: { value: posTex }, uPosRefs: { value: posTex },
+    uPosNearest: { value: nearTex }, uIsHovering: { value: 0 },
+    uTime: { value: 0 }, uDeltaTime: { value: 0 },
+  },
+  vertexShader: `void main(){gl_Position=vec4(position,1.0);}`,
+  fragmentShader: `
+    precision highp float;
+    uniform sampler2D uPosition, uPosRefs, uPosNearest;
+    uniform float uTime, uDeltaTime, uIsHovering;
+    vec2 hash(vec2 p){p=vec2(dot(p,vec2(2127.1,81.17)),dot(p,vec2(1269.5,283.37)));return fract(sin(p)*43758.5453);}
+    void main(){
+      vec2 uv=gl_FragCoord.xy/vec2(${SZF});
+      vec4 pF=texture2D(uPosition,uv);
+      float scale=pF.z, vel=pF.w;
+      vec2 ref=texture2D(uPosRefs,uv).xy, near=texture2D(uPosNearest,uv).xy;
+      float s=hash(uv).x, s2=hash(uv).y;
+      float time=uTime*0.5, lifeEnd=3.0+sin(s2*100.0), life=mod(s*100.0+time,lifeEnd);
+      vec2 pos=pF.xy;
+      vec2 target=mix(ref,near,uIsHovering*uIsHovering);
+      vec2 dir=normalize(target-pos)*0.01;
+      float dist=length(target-pos), ds=smoothstep(0.15,0.0,dist);
+      if(dist>0.005) pos+=dir*ds;
+      if(life<0.01){pos=ref;pF.xy=ref;scale=0.0;}
+      float ts=smoothstep(0.01,0.5,life)-smoothstep(0.5,1.0,life/lifeEnd);
+      ts+=smoothstep(0.1,0.0,smoothstep(0.001,0.1,dist))*1.5*uIsHovering;
+      scale+=(ts-scale)*0.1;
+      vec2 fp=pos, diff=(fp-pF.xy)*0.2;
+      vel=smoothstep(0.15,0.001,dist)*uIsHovering;
+      gl_FragColor=vec4(pF.xy+diff,scale,vel);
+    }`,
+});
+simScene.add(new Mesh(new PlaneGeometry(2, 2), simMat));
+
+const geo = new BufferGeometry();
+const uvs = new Float32Array(count * 2), pos = new Float32Array(count * 3);
+for (let i = 0; i < count; i++) {
+  uvs[i*2] = (i % SZ) / SZ; uvs[i*2+1] = Math.floor(i / SZ) / SZ;
+}
+geo.setAttribute('position', new BufferAttribute(pos, 3));
+geo.setAttribute('uv', new BufferAttribute(uvs, 2));
+
+const pr = Math.min(devicePixelRatio, 2);
+const renderMat = new ShaderMaterial({
+  uniforms: {
+    uPosition: { value: posTex }, uTime: { value: 0 },
+    uColor1: { value: new Color('#318bf7') },
+    uColor2: { value: new Color('#bada4c') },
+    uColor3: { value: new Color('#e35058') },
+    uAlpha: { value: 1 }, uIsHovering: { value: 0 },
+    uPulseProgress: { value: 0 },
+    uParticleScale: { value: (W / pr / 2000) * 0.5 },
+    uPixelRatio: { value: pr },
+  },
+  vertexShader: `
+    precision highp float;
+    uniform sampler2D uPosition;
+    uniform float uTime, uParticleScale, uPixelRatio, uIsHovering, uPulseProgress;
+    varying float vScale, vVel;
+    ${noiseGLSL}
+    void main(){
+      vec4 p=texture2D(uPosition,uv);
+      vScale=p.z; vVel=p.w;
+      float nx=snoise(vec3(p.xy*10.0,uTime*0.2+100.0));
+      float ny=snoise(vec3(p.xy*10.0,uTime*0.2));
+      float nx2=snoise(vec3(p.xy*0.5,uTime*0.15+45.0));
+      float ny2=snoise(vec3(p.xy*0.5,uTime*0.15+87.0));
+      float d=smoothstep(0.0,0.9,p.w)*uIsHovering;
+      p.y+=ny*0.005*d; p.x+=nx*0.005*d;
+      p.y+=ny2*0.02; p.x+=nx2*0.02;
+      float cd=length(p.xy), pr=uPulseProgress;
+      float t=smoothstep(pr-0.25,pr,cd)-smoothstep(pr,pr+0.25,cd);
+      t*=smoothstep(1.0,0.0,cd);
+      p.xy*=1.0+t*0.02;
+      vec4 vs=modelViewMatrix*vec4(p.xy,0.0,1.0);
+      gl_Position=projectionMatrix*vs;
+      gl_PointSize=((vScale*7.0)*(uPixelRatio*0.5)*uParticleScale)+(0.25*uPixelRatio);
+    }`,
+  fragmentShader: `
+    precision highp float;
+    varying float vScale, vVel;
+    uniform vec3 uColor1, uColor2, uColor3;
+    uniform float uAlpha;
+    void main(){
+      vec2 uv=gl_PointCoord.xy-0.5;
+      float h=0.8, p=vVel;
+      vec3 c=mix(mix(uColor1,uColor2,p/h),mix(uColor2,uColor3,(p-h)/(1.0-h)),step(h,p));
+      float disc=smoothstep(0.5,0.45,length(uv));
+      float a=uAlpha*disc*smoothstep(0.1,0.2,vScale);
+      if(a<0.01)discard;
+      gl_FragColor=vec4(clamp(c,0.0,1.0),clamp(a,0.0,1.0));
+    }`,
+  transparent: true, depthTest: false, depthWrite: false,
+});
+const points = new Points(geo, renderMat);
+points.scale.set(5, -5, 5);
+scene.add(points);
+
+let hoverProg = 0, hoverTarget = 1, pushProg = 0, pushTarget = 1;
+let lastTime = 0, everRendered = false;
+
+const mouse = new Vector2();
+canvas.addEventListener('mousemove', e => {
+  mouse.x = (e.clientX / W) * 2 - 1;
+  mouse.y = -(e.clientY / H) * 2 + 1;
+});
+canvas.addEventListener('mouseenter', () => { hoverTarget = 1; pushProg = 0; pushTarget = 1; });
+canvas.addEventListener('mouseleave', () => { hoverTarget = 0; pushProg = 0; pushTarget = 1; });
+
+document.querySelectorAll('.controls button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.controls button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const idx = parseInt(btn.dataset.i);
+    nearTex = makePosTex(targets[idx]);
+    simMat.uniforms.uPosNearest.value = nearTex;
+    pushProg = 0; pushTarget = 1;
+  });
+});
+
+window.addEventListener('resize', () => {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime(), dt = t - lastTime; lastTime = t;
+
+  hoverProg += (hoverTarget - hoverProg) * 0.08;
+  if (pushTarget > 0) { pushProg += dt * 0.5; if (pushProg >= 1) { pushProg = 1; pushTarget = 0; } }
+
+  simMat.uniforms.uPosition.value = everRendered ? rt1.texture : posTex;
+  simMat.uniforms.uTime.value = t;
+  simMat.uniforms.uDeltaTime.value = dt;
+  simMat.uniforms.uIsHovering.value = hoverProg;
+
+  renderer.setRenderTarget(rt2);
+  renderer.render(simScene, simCam);
+  renderer.setRenderTarget(null);
+
+  renderMat.uniforms.uPosition.value = everRendered ? rt2.texture : posTex;
+  renderMat.uniforms.uTime.value = t;
+  renderMat.uniforms.uIsHovering.value = hoverProg;
+  renderMat.uniforms.uPulseProgress.value = pushProg;
+  renderMat.uniforms.uParticleScale.value = (innerWidth / pr / 2000) * 0.5;
+
+  renderer.autoClear = false;
+  renderer.clear();
+  renderer.render(scene, camera);
+
+  const tmp = rt1; rt1 = rt2; rt2 = tmp;
+  everRendered = true;
+}
+animate();
+</script>
+</body>
+</html>
