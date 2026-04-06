@@ -1,0 +1,18 @@
+{
+  "name": "morphing-particles",
+  "version": "1.0.0",
+  "description": "Standalone morphing particle system using Three.js GPGPU",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.180.0",
+    "poisson-disk-sampling": "^2.3.1"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
