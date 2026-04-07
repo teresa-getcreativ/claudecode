@@ -78,49 +78,7 @@
     return 32 * (n0 + n1 + n2 + n3);
   }
 
-  /* ── Poisson-disk sampling ─────────────────────────────────────────── */
-  function poissonDisk(w, h, minD, maxD, tries, distFn) {
-    var cs = (maxD || minD) / Math.sqrt(2);
-    var gW = Math.ceil(w / cs), gH = Math.ceil(h / cs);
-    var grid = new Int32Array(gW * gH);
-    for (var g = 0; g < grid.length; g++) grid[g] = -1;
-    var pts = [], act = [];
-    function gi(x, y) { return Math.floor(x / cs) + Math.floor(y / cs) * gW; }
-    function add(x, y) {
-      var i = pts.length; pts.push([x, y]); act.push(i); grid[gi(x, y)] = i;
-    }
-    function near(x, y) {
-      var gx = Math.floor(x / cs), gy = Math.floor(y / cs);
-      for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) {
-        var nx = gx + dx, ny = gy + dy;
-        if (nx < 0 || nx >= gW || ny < 0 || ny >= gH) continue;
-        var idx = grid[nx + ny * gW]; if (idx === -1) continue;
-        var p = pts[idx], ddx = p[0] - x, ddy = p[1] - y;
-        var d = Math.sqrt(ddx * ddx + ddy * ddy);
-        var pd = distFn ? distFn([x, y]) : 1;
-        if (d < minD + (maxD - minD) * pd) return true;
-      }
-      return false;
-    }
-    add(Math.random() * w, Math.random() * h);
-    while (act.length > 0) {
-      var ri = Math.floor(Math.random() * act.length);
-      var pt = pts[act[ri]], found = false;
-      for (var tt = 0; tt < tries; tt++) {
-        var a = Math.random() * Math.PI * 2;
-        var pd = distFn ? distFn(pt) : 1;
-        var r = minD + (maxD - minD) * pd + Math.random() * minD;
-        var nx = pt[0] + Math.cos(a) * r, ny = pt[1] + Math.sin(a) * r;
-        if (nx >= 0 && nx < w && ny >= 0 && ny < h && !near(nx, ny)) {
-          add(nx, ny); found = true; break;
-        }
-      }
-      if (!found) act.splice(ri, 1);
-    }
-    return pts;
-  }
-
-  /* ── Image sampling ────────────────────────────────────────────────── */
+  /* ── Image loader (main thread — needs DOM) ─────────────────────────── */
   function loadImg(url) {
     return new Promise(function (res, rej) {
       var img = new Image();
@@ -139,31 +97,121 @@
     });
   }
 
-  function sampleImage(canvas, basePts, density) {
-    var ctx = canvas.getContext('2d');
+  /* ── Worker source (Poisson-disk + image sampling off main thread) ── */
+  var WORKER_SRC = [
+    'self.onmessage = function(e) {',
+    '  var d = e.data, pixels = d.pixels, density = d.density, minD = d.minD, maxD = d.maxD;',
+    '',
+    '  function poissonDisk(w, h, minD, maxD, tries, distFn) {',
+    '    var cs = (maxD || minD) / Math.sqrt(2);',
+    '    var gW = Math.ceil(w / cs), gH = Math.ceil(h / cs);',
+    '    var grid = new Int32Array(gW * gH);',
+    '    for (var g = 0; g < grid.length; g++) grid[g] = -1;',
+    '    var pts = [], act = [];',
+    '    function gi(x, y) { return Math.floor(x / cs) + Math.floor(y / cs) * gW; }',
+    '    function add(x, y) { var i = pts.length; pts.push([x, y]); act.push(i); grid[gi(x, y)] = i; }',
+    '    function near(x, y) {',
+    '      var gx = Math.floor(x / cs), gy = Math.floor(y / cs);',
+    '      for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) {',
+    '        var nx = gx + dx, ny = gy + dy;',
+    '        if (nx < 0 || nx >= gW || ny < 0 || ny >= gH) continue;',
+    '        var idx = grid[nx + ny * gW]; if (idx === -1) continue;',
+    '        var p = pts[idx], ddx = p[0] - x, ddy = p[1] - y;',
+    '        var dist = Math.sqrt(ddx * ddx + ddy * ddy);',
+    '        var pd = distFn ? distFn([x, y]) : 1;',
+    '        if (dist < minD + (maxD - minD) * pd) return true;',
+    '      }',
+    '      return false;',
+    '    }',
+    '    add(Math.random() * w, Math.random() * h);',
+    '    while (act.length > 0) {',
+    '      var ri = Math.floor(Math.random() * act.length);',
+    '      var pt = pts[act[ri]], found = false;',
+    '      for (var tt = 0; tt < tries; tt++) {',
+    '        var a = Math.random() * Math.PI * 2;',
+    '        var pd = distFn ? distFn(pt) : 1;',
+    '        var r = minD + (maxD - minD) * pd + Math.random() * minD;',
+    '        var nx = pt[0] + Math.cos(a) * r, ny = pt[1] + Math.sin(a) * r;',
+    '        if (nx >= 0 && nx < w && ny >= 0 && ny < h && !near(nx, ny)) {',
+    '          add(nx, ny); found = true; break;',
+    '        }',
+    '      }',
+    '      if (!found) act.splice(ri, 1);',
+    '    }',
+    '    return pts;',
+    '  }',
+    '',
+    '  function bri(px, pt) {',
+    '    var x = Math.round(pt[0]), y = Math.round(pt[1]);',
+    '    if (x < 0 || x >= 500 || y < 0 || y >= 500) return 1;',
+    '    var p = px[(x + y * 500) * 4] / 255;',
+    '    return p * p * p;',
+    '  }',
+    '',
+    '  /* Step 1: base points */',
+    '  var basePts = poissonDisk(500, 500, Math.max(2, minD), Math.max(3, maxD), 20);',
+    '  var count = basePts.length;',
+    '',
+    '  /* Step 2: image-weighted Poisson + nearest-point matching */',
+    '  var imgMaxD = (density / 300) * -40 + 50;',
+    '  var sampled = poissonDisk(500, 500, 1, Math.max(5, imgMaxD), 20, function(pt) { return bri(pixels, pt); });',
+    '',
+    '  /* Flatten base points and compute targets */',
+    '  var baseFlat = new Float32Array(count * 2);',
+    '  var targetFlat = new Float32Array(count * 2);',
+    '  for (var i = 0; i < count; i++) {',
+    '    baseFlat[i * 2] = basePts[i][0];',
+    '    baseFlat[i * 2 + 1] = basePts[i][1];',
+    '    var bx = basePts[i][0], by = basePts[i][1];',
+    '    var nd = Infinity, nx = bx - 250, ny = by - 250;',
+    '    for (var j = 0; j < sampled.length; j++) {',
+    '      if (Math.random() < 0.75) continue;',
+    '      var sx = sampled[j][0], sy = sampled[j][1];',
+    '      var dx = sx - bx, dy = sy - by, dist = Math.sqrt(dx * dx + dy * dy);',
+    '      if (bri(pixels, sampled[j]) < 1 && dist < nd) { nd = dist; nx = sx - 250; ny = sy - 250; }',
+    '    }',
+    '    targetFlat[i * 2] = nx;',
+    '    targetFlat[i * 2 + 1] = ny;',
+    '  }',
+    '',
+    '  self.postMessage({ baseFlat: baseFlat.buffer, targetFlat: targetFlat.buffer, count: count },',
+    '    [baseFlat.buffer, targetFlat.buffer]);',
+    '};'
+  ].join('\n');
+
+  /* ── Run heavy sampling in a Web Worker ─────────────────────────────── */
+  function computeParticlesAsync(imgCanvas, density) {
+    var mD = 10 - density / 300 * 8, xD = mD + 1;
+    var ctx = imgCanvas.getContext('2d');
     var imgData = ctx.getImageData(0, 0, 500, 500);
-    var data = imgData.data;
-    function bri(pt) {
-      var x = Math.round(pt[0]), y = Math.round(pt[1]);
-      if (x < 0 || x >= 500 || y < 0 || y >= 500) return 1;
-      var p = data[(x + y * 500) * 4] / 255;
-      return p * p * p;
-    }
-    var maxD = (density / 300) * -40 + 50;
-    var sampled = poissonDisk(500, 500, 1, Math.max(5, maxD), 20, bri);
-    var result = new Float32Array(basePts.length * 2);
-    for (var i = 0; i < basePts.length; i++) {
-      var bx = basePts[i][0], by = basePts[i][1];
-      var nd = Infinity, nx = bx - 250, ny = by - 250;
-      for (var j = 0; j < sampled.length; j++) {
-        if (Math.random() < 0.75) continue;
-        var sx = sampled[j][0], sy = sampled[j][1];
-        var dx = sx - bx, dy = sy - by, d = Math.sqrt(dx * dx + dy * dy);
-        if (bri(sampled[j]) < 1 && d < nd) { nd = d; nx = sx - 250; ny = sy - 250; }
-      }
-      result[i * 2] = nx; result[i * 2 + 1] = ny;
-    }
-    return result;
+    var pixels = new Uint8Array(imgData.data); /* copy for transfer */
+
+    return new Promise(function (resolve, reject) {
+      var blob = new Blob([WORKER_SRC], { type: 'application/javascript' });
+      var url = URL.createObjectURL(blob);
+      var worker = new Worker(url);
+
+      worker.onmessage = function (e) {
+        worker.terminate();
+        URL.revokeObjectURL(url);
+        resolve({
+          baseFlat: new Float32Array(e.data.baseFlat),
+          targetFlat: new Float32Array(e.data.targetFlat),
+          count: e.data.count
+        });
+      };
+
+      worker.onerror = function (err) {
+        worker.terminate();
+        URL.revokeObjectURL(url);
+        reject(err);
+      };
+
+      worker.postMessage(
+        { pixels: pixels.buffer, density: density, minD: mD, maxD: xD },
+        [pixels.buffer]
+      );
+    });
   }
 
   /* ── Hash function (matches GLSL version for lifecycle consistency) ── */
@@ -197,13 +245,12 @@
     if (IS_MOBILE && density > MOBILE_DENSITY_CAP) density = MOBILE_DENSITY_CAP;
 
     return loadImg(src).then(function (imgCanvas) {
-      /* ── Base points via Poisson-disk ─────────────────────────────── */
-      var mD = 10 - density / 300 * 8, xD = mD + 1;
-      var basePts = poissonDisk(500, 500, Math.max(2, mD), Math.max(3, xD), 20);
-      var count = basePts.length;
-
-      /* ── Sample morph targets from image ──────────────────────────── */
-      var targetData = sampleImage(imgCanvas, basePts, density);
+      /* Heavy computation runs in a Web Worker — main thread stays free */
+      return computeParticlesAsync(imgCanvas, density);
+    }).then(function (computed) {
+      var count = computed.count;
+      var baseFlat = computed.baseFlat;
+      var targetData = computed.targetFlat;
 
       /* ── CPU particle state arrays ────────────────────────────────── */
       var restX    = new Float32Array(count);
@@ -220,8 +267,8 @@
 
       for (var i = 0; i < count; i++) {
         /* Rest position: base point in normalized coords (-1..1 range) */
-        restX[i] = (basePts[i][0] - 250) / 250;
-        restY[i] = (basePts[i][1] - 250) / 250;
+        restX[i] = (baseFlat[i * 2] - 250) / 250;
+        restY[i] = (baseFlat[i * 2 + 1] - 250) / 250;
         /* Target position: from image sampling */
         targetX[i] = targetData[i * 2] / 250;
         targetY[i] = targetData[i * 2 + 1] / 250;
