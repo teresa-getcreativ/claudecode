@@ -1,10 +1,28 @@
 /**
- * Morphing Particles — Webflow Embed
+ * Morphing Particles — Webflow Embed (Get Creativ Edition)
  * Auto-initializes on any div with data-morph-particles attribute.
  * Multiple independent instances per page supported.
+ *
+ * Brand color attributes:
+ *   data-morph-color-white="#ffffff"
+ *   data-morph-color-black="#191919"
+ *   data-morph-color-green="#8fff00"
+ *   data-morph-color-yellow="#f5f300"
+ *
+ * The 3-color gradient maps to: color1 (resting) → color2 (mid) → color3 (active morph)
+ * Pick any 3 of your brand colors for the gradient via:
+ *   data-morph-color1  (defaults to color-black)
+ *   data-morph-color2  (defaults to color-green)
+ *   data-morph-color3  (defaults to color-black)
+ *
+ * Or use the named shortcuts directly — the system reads them in priority:
+ *   1. data-morph-color1/2/3 (explicit override)
+ *   2. Falls back to brand defaults
  */
 (function(){'use strict';
 const THREE_CDN='https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+/* Brand palette */
+const BRAND={white:'#ffffff',black:'#191919',green:'#8fff00',yellow:'#f5f300'};
 const noiseGLSL=`
 vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
 vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
@@ -66,14 +84,33 @@ const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,500,500);
 const s=Math.min(500/img.width,500/img.height)*0.8;
 const w=img.width*s,h=img.height*s;ctx.drawImage(img,(500-w)/2,(500-h)/2,w,h);res(c);};
 img.onerror=()=>rej(new Error('Failed: '+url));img.src=url;});}
+/* Resolve a color: check named brand attrs first, then direct, then default */
+function resolveColor(el,num,fallback){
+const direct=el.dataset['morphColor'+num];
+if(direct)return direct;
+/* Check if a named brand color is set */
+const named=el.dataset['morphColor'+({1:'White',2:'Green',3:'Black'}[num]||'')];
+if(named)return named;
+return fallback;
+}
 async function createInstance(el,T){
 const{Scene,OrthographicCamera,PerspectiveCamera,WebGLRenderer,WebGLRenderTarget,DataTexture,
 RGBAFormat,FloatType,NearestFilter,RepeatWrapping,ShaderMaterial,BufferGeometry,
 BufferAttribute,Points,PlaneGeometry,Mesh,Clock,Color,Vector2}=T;
-const src=el.dataset.morphSrc,c1=el.dataset.morphColor1||'#676A72',
-c2=el.dataset.morphColor2||'#4285f4',c3=el.dataset.morphColor3||'#676A72',
-den=parseFloat(el.dataset.morphDensity||'150'),ps=parseFloat(el.dataset.morphScale||'0.5'),
-bg=el.dataset.morphBg||null,zm=parseFloat(el.dataset.morphZoom||'3.5');
+const src=el.dataset.morphSrc;
+/* Color resolution: named brand colors override defaults */
+const cWhite=el.dataset.morphColorWhite||BRAND.white;
+const cBlack=el.dataset.morphColorBlack||BRAND.black;
+const cGreen=el.dataset.morphColorGreen||BRAND.green;
+const cYellow=el.dataset.morphColorYellow||BRAND.yellow;
+/* 3-color gradient: explicit > named > brand default */
+const c1=el.dataset.morphColor1||cBlack;
+const c2=el.dataset.morphColor2||cGreen;
+const c3=el.dataset.morphColor3||cBlack;
+const den=parseFloat(el.dataset.morphDensity||'150');
+const ps=parseFloat(el.dataset.morphScale||'0.5');
+const bg=el.dataset.morphBg||null;
+const zm=parseFloat(el.dataset.morphZoom||'3.5');
 if(!src){console.warn('[MP] No data-morph-src');return;}
 let ic;try{ic=await loadImg(src);}catch(e){console.error('[MP]',e.message);return;}
 const SZ=256,SZF=SZ.toFixed(1),pr=Math.min(devicePixelRatio,2);
